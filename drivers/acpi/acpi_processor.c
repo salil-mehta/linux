@@ -231,6 +231,7 @@ static int acpi_processor_hotadd_init(struct acpi_processor *pr)
 	if (ACPI_FAILURE(status) || !(sta & ACPI_STA_DEVICE_PRESENT))
 		return -ENODEV;
 
+	/* hot-add path */
 	cpu_maps_update_begin();
 	cpus_write_lock();
 
@@ -349,7 +350,12 @@ static int acpi_processor_get_info(struct acpi_device *device)
 	 *  because cpuid <-> apicid mapping is persistent now.
 	 */
 	if (invalid_logical_cpuid(pr->id) || !cpu_present(pr->id)) {
-		int ret = acpi_processor_hotadd_init(pr);
+		int ret;
+
+		if (acpi_processor_can_make_present(pr))
+			ret = acpi_processor_make_present(pr);
+		else
+			ret = acpi_processor_hotadd_init(pr);
 
 		if (ret)
 			return ret;
@@ -508,6 +514,19 @@ static void acpi_processor_remove(struct acpi_device *device)
 	if (pr->id >= nr_cpu_ids)
 		goto out;
 
+	/*
+	 * Make not-present path:
+	 * we shall only make cpu not-present in the linux if arch does not
+	 * supports hot-remove. In such a case CPU shall still be present at the
+	 * firmware/VMM level and could be kept disabled i.e. _STA.Enable=0 and
+	 * _STA.Present=1
+	 */
+	if (acpi_processor_can_make_not_present(pr)) {
+		acpi_processor_make_not_present(pr);
+		goto out;
+	}
+
+	/* hot-remove path */
 	/*
 	 * The only reason why we ever get here is CPU hot-removal.  The CPU is
 	 * already offline and the ACPI device removal locking prevents it from
