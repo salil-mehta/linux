@@ -367,3 +367,64 @@ int acpi_get_ioapic_id(acpi_handle handle, u32 gsi_base, u64 *phys_addr)
 	return apic_id;
 }
 #endif /* CONFIG_ACPI_HOTPLUG_IOAPIC */
+
+static bool check_gicc_online_capable(struct acpi_processor *pr,
+				      struct acpi_subtable_header *header)
+{
+	struct acpi_madt_generic_interrupt *gicc;
+
+	gicc = (struct acpi_madt_generic_interrupt *)header;
+
+	/*
+	 * GIC cpu entry can either be *enabled* or be *online-capable*
+	 * as per ACPI 6.4 MADT GICC specs.
+	 */
+	if (gicc->flags & ACPI_MADT_GICC_CPU_CAPABLE)
+		return true;
+
+	/*
+	 * Far from ideal, but this is required to cater unplugging of the
+	 * cold booted cpus. After unplug these could be plugged back in
+	 */
+	if (gicc->flags & ACPI_MADT_ENABLED)
+		return true;
+
+	/* this leg should never hit on arm64 */
+	 pr_err_once(FW_BUG "CPU%d is neither enabled or online-capable!\n",
+		     pr->id);
+	add_taint(TAINT_FIRMWARE_WORKAROUND, LOCKDEP_STILL_OK);
+
+	return false;
+}
+
+bool acpi_check_online_capable(struct acpi_processor *pr)
+{
+	struct acpi_subtable_header *header;
+	phys_cpuid_t phys_id;
+	bool ret = false;
+
+	/* fetch the MADT entry for this processor */
+	header = match_madt_entry(1, pr->acpi_id, &phys_id);
+	if (!header || (phys_id != pr->phys_id))
+		return false;
+
+	/*
+	 * Some SoC based arch like ARM64 do not support processor hot-add.
+	 * But such systems could support onlining of the processors after boot.
+	 * This capability is specified in the ACPI MADT table.
+	 */
+	switch(header->type) {
+	case ACPI_MADT_TYPE_GENERIC_INTERRUPT:
+		ret = check_gicc_online_capable(pr, header);
+		break;
+	default:
+		/*
+		 * for other architectures, online-capable is unused or not
+		 * defined so we will just return false for now.
+		 */
+		break;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(acpi_check_online_capable);
