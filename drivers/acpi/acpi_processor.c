@@ -161,6 +161,63 @@ int __weak acpi_unmap_cpu(int cpu)
 	return -ENODEV;
 }
 
+int __weak acpi_make_cpu_present(int cpu)
+{
+	return -ENODEV;
+}
+
+static bool acpi_processor_can_make_present(struct acpi_processor *pr)
+{
+	/*
+	 * association between logical cpuid and physical id gets fixed at
+	 * the boot time for all the online-capable cpus
+	 */
+	if ((invalid_logical_cpuid(pr->id) ||
+	    invalid_phys_cpuid(pr->phys_id)) || !acpi_check_online_capable(pr))
+		return false;
+
+	return true;
+}
+
+static int acpi_processor_make_present(struct acpi_processor *pr)
+{
+	unsigned long long sta;
+	acpi_status status;
+	int ret;
+
+	status = acpi_evaluate_integer(pr->handle, "_STA", NULL, &sta);
+	if (ACPI_FAILURE(status) || !(sta & ACPI_STA_DEVICE_PRESENT) ||
+	    !(sta & ACPI_STA_DEVICE_ENABLED))
+		return -ENODEV;
+
+	/*
+	* Some arch dont support cpu hot-add but are online-capable
+	* after boot(e.g. see ACPI spec 6.5 Table 5.37). All possible
+	* cpus of such arch are always present physically (and hence
+	* also marked as *present*(_STA.Pres=1) in the firmware) during
+	* boot and can't be *removed*(_STA.Pres=0) later. But few cpus
+	* can remain in the *disabled*(_STA.Enabled=0) state. This is
+	* unlike hot-{add,rem} where firmware can have some cpus in not
+	* present (i.e. in *removed*(_STA.Pres=0)) state during the
+	* boot time but could be made present(_STA.Pres=1) later.
+	*
+	* For online-capable cpus, arch specific code will make the
+	* cpus present in the kernel by registering the cpu and marking
+	* them present. Other initializations and mappings have already
+	* been performed for all the cpus at boot time.
+	*/
+	ret = acpi_make_cpu_present(pr->id);
+	if (ret) {
+	      pr_err_once("failed to make CPU%d present", pr->id);
+	      return -ENODEV;
+	}
+
+	pr_info("CPU%d has been made present\n", pr->id);
+	pr->flags.need_hotplug_init = 0;
+
+	return ret;
+}
+
 static int acpi_processor_hotadd_init(struct acpi_processor *pr)
 {
 	unsigned long long sta;
@@ -419,6 +476,26 @@ static int acpi_processor_add(struct acpi_device *device,
 }
 
 #ifdef CONFIG_ACPI_HOTPLUG_CPU
+void __weak acpi_make_cpu_not_present(int cpu)
+{
+	return;
+}
+
+static bool acpi_processor_can_make_not_present(struct acpi_processor *pr)
+{
+	if (acpi_check_online_capable(pr))
+		return true;
+
+	return false;
+}
+
+static void acpi_processor_make_not_present(struct acpi_processor *pr)
+{
+	acpi_make_cpu_not_present(pr->id);
+
+	pr_info("CPU%d has been made not present\n", pr->id);
+}
+
 /* Removal */
 static void acpi_processor_remove(struct acpi_device *device)
 {

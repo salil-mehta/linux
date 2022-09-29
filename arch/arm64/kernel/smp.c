@@ -767,6 +767,29 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 	}
 }
 
+int acpi_make_cpu_present(int cpu)
+{
+	int ret;
+
+	ret = arch_register_cpu(cpu);
+	if (ret) {
+		pr_err("failed to register CPU%d\n", cpu);
+		return ret;
+	}
+
+	set_cpu_present(cpu, true);
+
+	return 0;
+}
+
+void acpi_make_cpu_not_present(int cpu)
+{
+	unregister_cpu(&per_cpu(cpu_devices, cpu));
+	set_cpu_present(cpu, false);
+
+	return;
+}
+
 static const char *ipi_types[NR_IPI] __tracepoint_string = {
 	[IPI_RESCHEDULE]	= "Rescheduling interrupts",
 	[IPI_CALL_FUNC]		= "Function call interrupts",

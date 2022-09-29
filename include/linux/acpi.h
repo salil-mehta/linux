@@ -338,6 +338,8 @@ static inline int acpi_processor_evaluate_cst(acpi_handle handle, u32 cpu,
 int acpi_map_cpu(acpi_handle handle, phys_cpuid_t physid, u32 acpi_id,
 		 int *pcpu);
 int acpi_unmap_cpu(int cpu);
+int acpi_make_cpu_present(int cpu);
+void acpi_make_cpu_not_present(int cpu);
 #endif /* CONFIG_ACPI_HOTPLUG_CPU */
 
 #ifdef CONFIG_ACPI_HOTPLUG_IOAPIC
