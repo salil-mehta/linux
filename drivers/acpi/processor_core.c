@@ -213,7 +213,7 @@ phys_cpuid_t acpi_get_phys_id(acpi_handle handle, int type, u32 acpi_id)
 
 	phys_id = map_mat_entry(handle, type, acpi_id);
 	if (invalid_phys_cpuid(phys_id))
-		phys_id = map_madt_entry(get_madt_table(), type, acpi_id);
+		phys_id = map_madt_entry(type, acpi_id);
 
 	return phys_id;
 }
