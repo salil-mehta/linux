@@ -155,39 +155,12 @@ match_madt_entry(int type, u32 acpi_id, phys_cpuid_t *phys_id)
 	return found;
 }
 
-static phys_cpuid_t map_madt_entry(struct acpi_table_madt *madt,
-				   int type, u32 acpi_id)
+static phys_cpuid_t map_madt_entry(int type, u32 acpi_id)
 {
-	unsigned long madt_end, entry;
-	phys_cpuid_t phys_id = PHYS_CPUID_INVALID;	/* CPU hardware ID */
+	phys_cpuid_t phys_id; /* CPU hardware ID */
 
-	if (!madt)
-		return phys_id;
+	match_madt_entry(type, acpi_id, &phys_id);
 
-	entry = (unsigned long)madt;
-	madt_end = entry + madt->header.length;
-
-	/* Parse all entries looking for a match. */
-
-	entry += sizeof(struct acpi_table_madt);
-	while (entry + sizeof(struct acpi_subtable_header) < madt_end) {
-		struct acpi_subtable_header *header =
-			(struct acpi_subtable_header *)entry;
-		if (header->type == ACPI_MADT_TYPE_LOCAL_APIC) {
-			if (!map_lapic_id(header, acpi_id, &phys_id))
-				break;
-		} else if (header->type == ACPI_MADT_TYPE_LOCAL_X2APIC) {
-			if (!map_x2apic_id(header, type, acpi_id, &phys_id))
-				break;
-		} else if (header->type == ACPI_MADT_TYPE_LOCAL_SAPIC) {
-			if (!map_lsapic_id(header, type, acpi_id, &phys_id))
-				break;
-		} else if (header->type == ACPI_MADT_TYPE_GENERIC_INTERRUPT) {
-			if (!map_gicc_mpidr(header, type, acpi_id, &phys_id))
-				break;
-		}
-		entry += header->length;
-	}
 	return phys_id;
 }
 
