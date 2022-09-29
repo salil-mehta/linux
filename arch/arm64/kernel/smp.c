@@ -718,6 +718,7 @@ void __init smp_init_cpus(void)
 
 void __init smp_prepare_cpus(unsigned int max_cpus)
 {
+	struct acpi_madt_generic_interrupt *gicc;
 	const struct cpu_operations *ops;
 	int err;
 	unsigned int cpu;
@@ -757,7 +758,11 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 		if (err)
 			continue;
 
-		set_cpu_present(cpu, true);
+		/* online-capable cpus shall be made present later */
+		gicc = acpi_cpu_get_madt_gicc(cpu);
+		if (gicc->flags & ACPI_MADT_ENABLED)
+			set_cpu_present(cpu, true);
+
 		numa_store_cpu_info(cpu);
 	}
 }
