@@ -166,19 +166,11 @@ static phys_cpuid_t map_madt_entry(int type, u32 acpi_id)
 
 phys_cpuid_t __init acpi_map_madt_entry(u32 acpi_id)
 {
-	struct acpi_table_madt *madt = NULL;
-	phys_cpuid_t rv;
+	phys_cpuid_t phys_id; /* CPU hardware ID */
 
-	acpi_get_table(ACPI_SIG_MADT, 0,
-		       (struct acpi_table_header **)&madt);
-	if (!madt)
-		return PHYS_CPUID_INVALID;
+	match_madt_entry(1, acpi_id, &phys_id);
 
-	rv = map_madt_entry(madt, 1, acpi_id);
-
-	acpi_put_table((struct acpi_table_header *)madt);
-
-	return rv;
+	return phys_id;
 }
 
 static phys_cpuid_t map_mat_entry(acpi_handle handle, int type, u32 acpi_id)
