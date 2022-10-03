@@ -467,7 +467,7 @@ static void acpi_processor_make_not_present(struct acpi_device *device)
 
 	pr = acpi_driver_data(device);
 	if (pr->id >= nr_cpu_ids)
-		goto out;
+		return;
 
 	/*
 	 * The only reason why we ever get here is CPU hot-removal.  The CPU is
@@ -495,10 +495,6 @@ static void acpi_processor_make_not_present(struct acpi_device *device)
 	cpu_maps_update_done();
 
 	try_offline_node(cpu_to_node(pr->id));
-
- out:
-	free_cpumask_var(pr->throttling.shared_cpu_map);
-	kfree(pr);
 }
 
 static void acpi_processor_remove(struct acpi_device *device)
@@ -520,11 +516,19 @@ static void acpi_processor_remove(struct acpi_device *device)
 
 	if (cpu_present(pr->id) && !(sta & ACPI_STA_DEVICE_PRESENT)) {
 		acpi_processor_make_not_present(device);
-		return;
+		goto out;
 	}
 
-	if (cpu_present(pr->id) && !(sta & ACPI_STA_DEVICE_ENABLED))
+	if (cpu_present(pr->id) && acpi_check_online_capable(pr)) {
 		arch_unregister_cpu(pr->id);
+	} else {
+		pr_err_once(FW_BUG "CPU%u not online-capable is being made not present\n", pr->id);
+		add_taint(TAINT_FIRMWARE_WORKAROUND, LOCKDEP_STILL_OK);
+	}
+
+ out:
+	free_cpumask_var(pr->throttling.shared_cpu_map);
+	kfree(pr);
 }
 
 #ifdef CONFIG_X86
