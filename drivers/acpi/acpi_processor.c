@@ -160,13 +160,6 @@ int __weak acpi_unmap_cpu(int cpu)
 	return -ENODEV;
 }
 
-int __weak arch_register_cpu(int cpu)
-{
-	return -ENODEV;
-}
-
-void __weak arch_unregister_cpu(int cpu) {}
-
 static int acpi_processor_make_present(struct acpi_processor *pr)	
 {
 	unsigned long long sta;
