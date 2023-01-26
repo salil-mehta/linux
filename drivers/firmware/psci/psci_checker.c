@@ -91,7 +91,7 @@ static unsigned int down_and_up_cpus(const struct cpumask *cpus,
 		 * resident CPU.
 		 */
 		if (cpumask_weight(offlined_cpus) + 1 == nb_available_cpus) {
-			if (ret != -EBUSY) {
+			if (ret != -EPERM && ret != -EBUSY) {
 				pr_err("Unexpected return code %d while trying "
 				       "to power down last online CPU %d\n",
 				       ret, cpu);
