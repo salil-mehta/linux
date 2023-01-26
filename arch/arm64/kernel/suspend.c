@@ -131,16 +131,6 @@ int cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 		/* Call the suspend finisher */
 		ret = fn(arg);
 
-		/*
-		 * Never gets here, unless the suspend finisher fails.
-		 * Successful cpu_suspend() should return from cpu_resume(),
-		 * returning through this code path is considered an error
-		 * If the return value is set to 0 force ret = -EOPNOTSUPP
-		 * to make sure a proper error condition is propagated
-		 */
-		if (!ret)
-			ret = -EOPNOTSUPP;
-
 		ct_cpuidle_exit();
 	} else {
 		ct_cpuidle_exit();
