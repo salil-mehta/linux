@@ -59,7 +59,7 @@
  */
 #define MIN_ROLLOVER_SECS	(40ULL * 365 * 24 * 3600)
 
-static unsigned arch_timers_present __initdata;
+static unsigned arch_timers_present __ro_after_init;
 
 struct arch_timer {
 	void __iomem *base;
@@ -1138,6 +1138,48 @@ static int arch_timer_dying_cpu(unsigned int cpu)
 }
 
 #ifdef CONFIG_CPU_PM
+static DEFINE_PER_CPU(unsigned long, saved_cntXctl);
+static DEFINE_PER_CPU(unsigned long, saved_cntXcval);
+
+static void save_timer_state(unsigned long type)
+{
+	int access;
+	bool virt_timer;
+	u64 cntXctl, cntXcval;
+
+	if (!(type & ARCH_TIMER_TYPE_CP15)) {
+		/* Only CPU timers may lose state */
+		return;
+	}
+
+	virt_timer = (arch_timer_uses_ppi == ARCH_TIMER_VIRT_PPI);
+	access = virt_timer ? ARCH_TIMER_VIRT_ACCESS : ARCH_TIMER_PHYS_ACCESS;
+	cntXctl = arch_timer_reg_read_cp15(access, ARCH_TIMER_REG_CTRL);
+	cntXcval = arch_timer_reg_read_cp15(access, ARCH_TIMER_REG_CVAL);
+
+	__this_cpu_write(saved_cntXctl, cntXctl);
+	__this_cpu_write(saved_cntXcval, cntXcval);
+}
+static void restore_timer_state(unsigned long type)
+{
+	int access;
+	bool virt_timer;
+	u64 cntXctl, cntXcval;
+
+	if (!(type & ARCH_TIMER_TYPE_CP15)) {
+		/* Only CPU timers may lose state */
+		return;
+	}
+
+	virt_timer = (arch_timer_uses_ppi == ARCH_TIMER_VIRT_PPI);
+	access = virt_timer ? ARCH_TIMER_VIRT_ACCESS : ARCH_TIMER_PHYS_ACCESS;
+	cntXctl = __this_cpu_read(saved_cntXctl);
+	cntXcval = __this_cpu_read(saved_cntXcval);
+
+	arch_timer_reg_write_cp15(access, ARCH_TIMER_REG_CVAL, cntXcval);
+	arch_timer_reg_write_cp15(access, ARCH_TIMER_REG_CTRL, cntXctl);
+}
+
 static DEFINE_PER_CPU(unsigned long, saved_cntkctl);
 static int arch_timer_cpu_pm_notify(struct notifier_block *self,
 				    unsigned long action, void *hcpu)
@@ -1145,9 +1187,13 @@ static int arch_timer_cpu_pm_notify(struct notifier_block *self,
 	if (action == CPU_PM_ENTER) {
 		__this_cpu_write(saved_cntkctl, arch_timer_get_cntkctl());
 
+		save_timer_state(arch_timers_present);
+
 		cpumask_clear_cpu(smp_processor_id(), &evtstrm_available);
 	} else if (action == CPU_PM_ENTER_FAILED || action == CPU_PM_EXIT) {
 		arch_timer_set_cntkctl(__this_cpu_read(saved_cntkctl));
+
+		restore_timer_state(arch_timers_present);
 
 		if (arch_timer_have_evtstrm_feature())
 			cpumask_set_cpu(smp_processor_id(), &evtstrm_available);
