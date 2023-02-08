@@ -92,21 +92,19 @@ static unsigned int down_and_up_cpus(const struct cpumask *cpus,
 		 */
 		if (cpumask_weight(offlined_cpus) + 1 == nb_available_cpus) {
 			if (ret != -EPERM && ret != -EBUSY) {
-				pr_err("Unexpected return code %d while trying "
-				       "to power down last online CPU %d\n",
-				       ret, cpu);
+				pr_err_ratelimited("Unexpected return code %d while trying to power down last online CPU %d\n",
+						   ret, cpu);
 				++err;
 			}
 		} else if (cpu == tos_resident_cpu) {
 			if (ret != -EPERM) {
-				pr_err("Unexpected return code %d while trying "
-				       "to power down TOS resident CPU %d\n",
-				       ret, cpu);
+				pr_err_ratelimited("Unexpected return code %d while trying to power down TOS resident CPU %d\n",
+						   ret, cpu);
 				++err;
 			}
 		} else if (ret != 0) {
-			pr_err("Error occurred (%d) while trying "
-			       "to power down CPU %d\n", ret, cpu);
+			pr_err_ratelimited("Error occurred (%d) while trying to power down CPU %d\n",
+					   ret, cpu);
 			++err;
 		}
 
@@ -119,8 +117,8 @@ static unsigned int down_and_up_cpus(const struct cpumask *cpus,
 		int ret = add_cpu(cpu);
 
 		if (ret != 0) {
-			pr_err("Error occurred (%d) while trying "
-			       "to power up CPU %d\n", ret, cpu);
+			pr_err_ratelimited("Error occurred (%d) while trying to power up CPU %d\n",
+					   ret, cpu);
 			++err;
 		} else {
 			cpumask_clear_cpu(cpu, offlined_cpus);
@@ -330,9 +328,8 @@ static int suspend_test_thread(void *arg)
 				/* We did not enter the expected state. */
 				++nb_shallow_sleep;
 			} else {
-				pr_err("Failed to suspend CPU %d: error %d "
-				       "(requested state %d, cycle %d)\n",
-				       cpu, ret, index, i);
+				pr_err_ratelimited("Failed to suspend CPU %d: error %d (requested state %d, cycle %d)\n",
+						   cpu, ret, index, i);
 				++nb_err;
 			}
 		}
