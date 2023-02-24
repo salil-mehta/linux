@@ -22,6 +22,8 @@
 #include <linux/crc32.h>
 #include <linux/dma-direct.h>
 
+#include <acpi/processor.h>
+
 #include "internal.h"
 
 extern struct acpi_device *acpi_root;
@@ -1259,6 +1261,21 @@ bool acpi_device_is_battery(struct acpi_device *adev)
 
 	return false;
 }
+
+bool acpi_device_is_cpu(struct acpi_device *adev)
+{
+	struct acpi_hardware_id *hwid;
+
+	list_for_each_entry(hwid, &adev->pnp.ids, list) {
+		if (!strcmp(ACPI_PROCESSOR_OBJECT_HID, hwid->id))
+			return true;
+		if (!strcmp(ACPI_PROCESSOR_DEVICE_HID, hwid->id))
+			return true;
+ 	}
+
+	return false;
+}
+
 
 static bool is_ejectable_bay(struct acpi_device *adev)
 {

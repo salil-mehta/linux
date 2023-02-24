@@ -115,6 +115,11 @@ int acpi_bus_get_status(struct acpi_device *device)
 	if (ACPI_FAILURE(status))
 		return -ENODEV;
 
+	if (acpi_device_is_cpu(device) && sta == 0) {
+		pr_err("QEMU BUG ... BODGING ...\n");
+		sta = 0xd;
+	}
+
 	acpi_set_device_status(device, sta);
 
 	if (device->status.functional && !device->status.present) {
