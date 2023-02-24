@@ -383,7 +383,7 @@ static int acpi_scan_device_check(struct acpi_device *adev)
 	int error;
 
 	acpi_bus_get_status(adev);
-	if (acpi_device_is_present(adev)) {
+	if (acpi_device_is_present_and_enabled(adev)) {
 		/*
 		 * This function is only called for device objects for which
 		 * matching scan handlers exist.  The only situation in which
@@ -417,7 +417,7 @@ static int acpi_scan_bus_check(struct acpi_device *adev, void *not_used)
 	int error;
 
 	acpi_bus_get_status(adev);
-	if (!acpi_device_is_present(adev)) {
+	if (!acpi_device_is_present_and_enabled(adev)) {
 		acpi_scan_device_not_enumerated(adev);
 		return 0;
 	}
@@ -2000,6 +2000,11 @@ bool acpi_device_is_present(const struct acpi_device *adev)
 	return adev->status.present || adev->status.functional;
 }
 
+bool acpi_device_is_present_and_enabled(const struct acpi_device *adev)
+{
+	return acpi_device_is_present(adev) && adev->status.enabled;
+}
+
 static bool acpi_scan_handler_matching(struct acpi_scan_handler *handler,
 				       const char *idstr,
 				       const struct acpi_device_id **matchid)
@@ -2467,7 +2472,7 @@ bool acpi_dev_ready_for_enumeration(const struct acpi_device *device)
 	if (device->flags.honor_deps && device->dep_unmet)
 		return false;
 
-	return acpi_device_is_present(device);
+	return acpi_device_is_present_and_enabled(device);
 }
 EXPORT_SYMBOL_GPL(acpi_dev_ready_for_enumeration);
 
