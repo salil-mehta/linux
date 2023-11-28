@@ -324,6 +324,7 @@ enum hns3_desc_type {
 };
 
 struct hns3_desc_cb {
+	struct hns3_enet_ring *ring;
 	dma_addr_t dma; /* dma address of this desc */
 	void *buf;      /* cpu addr for a desc */
 
@@ -505,6 +506,7 @@ struct hns3_enet_ring {
 			unsigned char *va;
 			struct sk_buff *skb;
 			struct sk_buff *tail_skb;
+			bool copy_pkt_head;
 		};
 	};
 } ____cacheline_internodealigned_in_smp;
@@ -687,6 +689,25 @@ static inline unsigned int hns3_page_order(struct hns3_enet_ring *ring)
 }
 
 #define hns3_page_size(_ring) (PAGE_SIZE << hns3_page_order(_ring))
+
+static inline u32 hns3_rx_buf_truesize(struct hns3_enet_ring *ring)
+{
+	return ring->page_pool ? ring->desc_cb->length :
+		ring->desc_cb->length / 2;
+}
+
+#define hns3_dbg(__dev, format, args...)\
+do {\
+	netdev_printk(KERN_ERR, __dev, "[%s][%d]" format, __func__, __LINE__ , ##args);\
+} while (0)
+
+static inline void hns3_skb_dump(struct sk_buff *skb, const char *msg)
+{
+	pr_emerg("SKB(%s): len:%d head:%px data:%px tail:%#lx end:%#lx dev:%s\n",
+		 msg, skb->len, skb->head, skb->data,
+		 (unsigned long)skb->tail, (unsigned long)skb->end,
+		 skb->dev ? skb->dev->name : "<NULL>");
+}
 
 /* iterator for handling rings in ring group */
 #define hns3_for_each_ring(pos, head) \
