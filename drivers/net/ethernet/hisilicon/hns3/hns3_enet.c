@@ -3370,6 +3370,7 @@ static int hns3_alloc_buffer(struct hns3_enet_ring *ring,
 	unsigned int order = hns3_page_order(ring);
 	struct page *p;
 
+	cb->ring = ring;
 	if (ring->page_pool) {
 		p = page_pool_dev_alloc_frag(ring->page_pool,
 					     &cb->page_offset,
@@ -3379,6 +3380,7 @@ static int hns3_alloc_buffer(struct hns3_enet_ring *ring,
 
 		cb->priv = p;
 		cb->buf = page_address(p);
+		cb->length = hns3_buf_size(ring);
 		cb->dma = page_pool_get_dma_addr(p);
 		cb->type = DESC_TYPE_PP_FRAG;
 		cb->reuse_flag = 0;
@@ -4029,6 +4031,7 @@ static void hns3_rx_ring_move_fw(struct hns3_enet_ring *ring)
 		ring->next_to_clean = 0;
 }
 
+#if 0
 static int hns3_alloc_skb(struct hns3_enet_ring *ring, unsigned int length,
 			  unsigned char *va)
 {
@@ -4078,6 +4081,75 @@ static int hns3_alloc_skb(struct hns3_enet_ring *ring, unsigned int length,
 	hns3_nic_reuse_page(skb, ring->frag_num++, ring, ring->pull_len,
 			    desc_cb);
 	hns3_rx_ring_move_fw(ring);
+
+	return 0;
+}
+#endif
+
+static int
+hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
+{
+	struct hns3_desc_cb *desc_cb = &ring->desc_cb[ring->next_to_clean];
+	struct hns3_desc *desc = &ring->desc[ring->next_to_clean];
+	struct net_device *netdev = ring_to_netdev(ring);
+	u32 truesize = hns3_rx_buf_truesize(ring);
+	struct sk_buff *skb;
+	bool eop;
+
+	eop = !!(le32_to_cpu(desc->rx.bd_base_info) & BIT(HNS3_RXD_FE_B));
+
+	/* avoid header copying overhead if the enitre packet is present within
+	 * the single RX buffer
+	 */
+	if (eop && (rlen < SKB_WITH_OVERHEAD(truesize))) {
+		skb = ring->skb = napi_build_skb(ring->va,
+						 hns3_rx_buf_truesize(ring));
+		skb_put(skb, rlen);
+		ring->copy_pkt_head = false;
+	} else {
+		/* sub optimized leg */
+		u32 hlen = eth_get_headlen(netdev, ring->va, HNS3_RX_HEAD_SIZE);
+		skb = ring->skb = napi_alloc_skb(&ring->tqp_vector->napi, hlen);
+
+		/* This is a GRO/jumbo packet spanning across many buffers or
+		 * frags. NIC hands over fully filled first buffer to the driver
+		 * in this leg. Allocated SKB must have shared SKB info at the
+		 * end of the first buffer i.e. linear part of SKB. One of the
+		 * way to accomodate above is to allocate SKB with pre-allocated
+		 * header space with SKB shared info at its end and then copy
+		 * only ethernet header part to this space from the received
+		 * first buffer. This might also be required for GRO as NIC
+		 * can update the header of the packet being coalesced.
+		 */
+		__skb_put(skb, hlen);
+		ring->copy_pkt_head = true;
+		ring->pull_len = hlen;
+
+		skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
+		desc_cb->page_offset + hlen, rlen - hlen, truesize);
+	}
+	if (unlikely(!skb)) {
+		hns3_rl_err(netdev, "failed to build skb from RX'ed buffer\n");
+		hns3_ring_stats_update(ring, sw_err_cnt);
+		return -ENOMEM;
+	}
+
+	trace_hns3_rx_desc(ring);
+	prefetchw(skb->data);
+
+	ring->pending_buf = 1;
+	ring->frag_num = 0;
+	ring->tail_skb = NULL;
+
+	skb_metadata_clear(skb);
+	skb_record_rx_queue(skb, ring->tqp->tqp_index);
+
+	hns3_ring_stats_update(ring, seg_pkt_cnt);
+
+	hns3_rx_ring_move_fw(ring);
+
+	if (ring->page_pool)
+		skb_mark_for_recycle(skb);
 
 	return 0;
 }
@@ -4361,7 +4433,8 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 		 */
 		net_prefetch(ring->va);
 
-		ret = hns3_alloc_skb(ring, length, ring->va);
+		//ret = hns3_alloc_skb(ring, length, ring->va);
+		ret = hns3_build_skb_(ring, length);
 		skb = ring->skb;
 
 		if (ret < 0) /* alloc buffer fail */
@@ -4380,7 +4453,7 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 	/* As the head data may be changed when GRO enable, copy
 	 * the head data in after other data rx completed
 	 */
-	if (skb->len > HNS3_RX_HEAD_SIZE)
+	if (ring->copy_pkt_head)
 		memcpy(skb->data, ring->va,
 		       ALIGN(ring->pull_len, sizeof(long)));
 
@@ -4390,7 +4463,6 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 		return ret;
 	}
 
-	skb_record_rx_queue(skb, ring->tqp->tqp_index);
 	return 0;
 }
 
@@ -4943,12 +5015,12 @@ static void hns3_alloc_page_pool(struct hns3_enet_ring *ring)
 		.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
 		.order = hns3_page_order(ring),
 		.pool_size = ring->desc_num * hns3_buf_size(ring) /
-				(PAGE_SIZE << hns3_page_order(ring)),
+				hns3_page_size(ring),
 		.nid = dev_to_node(ring_to_dev(ring)),
 		.dev = ring_to_dev(ring),
 		.dma_dir = DMA_FROM_DEVICE,
 		.offset = 0,
-		.max_len = PAGE_SIZE << hns3_page_order(ring),
+		.max_len = hns3_page_size(ring),
 	};
 
 	ring->page_pool = page_pool_create(&pp_params);
