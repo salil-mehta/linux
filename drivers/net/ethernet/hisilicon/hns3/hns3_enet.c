@@ -59,7 +59,7 @@ static unsigned int tx_sgl = 1;
 module_param(tx_sgl, uint, 0600);
 MODULE_PARM_DESC(tx_sgl, "Minimum number of frags when using dma_map_sg() to optimize the IOMMU mapping");
 
-static bool page_pool_enabled = true;
+static bool page_pool_enabled = false;
 module_param(page_pool_enabled, bool, 0400);
 
 #define HNS3_SGL_SIZE(nfrag)	(sizeof(struct scatterlist) * (nfrag) +	\
@@ -3370,6 +3370,7 @@ static int hns3_alloc_buffer(struct hns3_enet_ring *ring,
 	unsigned int order = hns3_page_order(ring);
 	struct page *p;
 
+	cb->ring = ring;
 	if (ring->page_pool) {
 		p = page_pool_dev_alloc_frag(ring->page_pool,
 					     &cb->page_offset,
@@ -3379,6 +3380,7 @@ static int hns3_alloc_buffer(struct hns3_enet_ring *ring,
 
 		cb->priv = p;
 		cb->buf = page_address(p);
+		cb->length = hns3_buf_size(ring);
 		cb->dma = page_pool_get_dma_addr(p);
 		cb->type = DESC_TYPE_PP_FRAG;
 		cb->reuse_flag = 0;
@@ -3431,6 +3433,9 @@ static int hns3_map_buffer(struct hns3_enet_ring *ring, struct hns3_desc_cb *cb)
 static void hns3_unmap_buffer(struct hns3_enet_ring *ring,
 			      struct hns3_desc_cb *cb)
 {
+	if (!cb->dma)
+		return;
+
 	if (cb->type & (DESC_TYPE_SKB | DESC_TYPE_FRAGLIST_SKB))
 		dma_unmap_single(ring_to_dev(ring), cb->dma, cb->length,
 				 ring_to_dma_dir(ring));
@@ -3715,11 +3720,73 @@ static bool hns3_nic_alloc_rx_buffers(struct hns3_enet_ring *ring,
 	return false;
 }
 
+#if 0
 static bool hns3_can_reuse_page(struct hns3_desc_cb *cb)
 {
 	return page_count(cb->priv) == cb->pagecnt_bias;
 }
+#endif
 
+static bool hns3_can_reuse_page(struct hns3_desc_cb *cb)
+{
+	struct page *page = (struct page *)cb->priv;
+	u16 pagecnt_bias = cb->pagecnt_bias;
+
+	/* distant node and pfmemalloc pages should not be reused */
+	if (!dev_page_is_reusable(page))
+		return false;
+
+	/* check if stack is using the other part of the page */
+	/*
+	 * TODO: Need to add proper page reuse handling for page size >= 8k
+	 */
+	if ((unlikely(page_count(page) - pagecnt_bias) > 1))
+		return false;
+
+	if (unlikely(pagecnt_bias == 1)) {
+		page_ref_add(page, USHRT_MAX - 1);
+		cb->pagecnt_bias = USHRT_MAX;
+	}
+
+	return true;
+}
+
+static void
+hns3_reuse_or_relinquish_page(struct hns3_enet_ring *ring,
+				  struct hns3_desc_cb *cb)
+{
+	/* driver based page-reuse is disabled with page-pool */
+	if (cb->ring->page_pool) {
+		cb->reuse_flag = 0;
+		return;
+	}
+
+	if (hns3_can_reuse_page(cb)) {
+		/* mark it for reuse in the RX buffer allocation later */
+		cb->reuse_flag = 1;
+		/* move to next buffer within the same page */
+		hns3_adjust_page_offset(cb);
+	} else {
+		/*
+		 * we are not reusing the page so unmap it. This should be done
+		 * irrespective of the fact whether we are eventually free'ing
+		 * the page or not.
+		 */
+		dma_unmap_page_attrs(ring->dev, cb->dma, cb->length,
+				     ring_to_dma_dir(ring), DMA_ATTR_SKIP_CPU_SYNC);
+		cb->dma = 0;
+
+		/*
+		 * update the page reference with the unbiased count. This
+		 * might not result in free'ing of the page being relinquished.
+		 * Driver is just falling back to the old unbiased page release
+		 * mechanism.
+		 */
+		__page_frag_cache_drain(cb->priv, cb->pagecnt_bias);
+	}
+}
+
+#if 0
 static int hns3_handle_rx_copybreak(struct sk_buff *skb, int i,
 				    struct hns3_enet_ring *ring,
 				    int pull_len,
@@ -3747,7 +3814,9 @@ static int hns3_handle_rx_copybreak(struct sk_buff *skb, int i,
 	hns3_ring_stats_update(ring, frag_alloc);
 	return 0;
 }
+#endif
 
+#if 0
 static void hns3_nic_reuse_page(struct sk_buff *skb, int i,
 				struct hns3_enet_ring *ring, int pull_len,
 				struct hns3_desc_cb *desc_cb)
@@ -3811,6 +3880,7 @@ out:
 	if (unlikely(!desc_cb->reuse_flag))
 		__page_frag_cache_drain(desc_cb->priv, desc_cb->pagecnt_bias);
 }
+#endif
 
 static int hns3_gro_complete(struct sk_buff *skb, u32 l234info)
 {
@@ -4029,6 +4099,7 @@ static void hns3_rx_ring_move_fw(struct hns3_enet_ring *ring)
 		ring->next_to_clean = 0;
 }
 
+#if 0
 static int hns3_alloc_skb(struct hns3_enet_ring *ring, unsigned int length,
 			  unsigned char *va)
 {
@@ -4081,15 +4152,94 @@ static int hns3_alloc_skb(struct hns3_enet_ring *ring, unsigned int length,
 
 	return 0;
 }
+#endif
+
+static int
+hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
+{
+	struct hns3_desc_cb *desc_cb = &ring->desc_cb[ring->next_to_clean];
+	struct net_device *netdev = ring_to_netdev(ring);
+	u32 truesize = hns3_rx_buf_truesize(ring);
+	struct sk_buff *skb;
+
+	ring->skb = napi_alloc_skb(&ring->tqp_vector->napi, HNS3_RX_HEAD_SIZE);
+	skb = ring->skb;
+	if (unlikely(!skb)) {
+		hns3_rl_err(netdev, "failed to build skb from RX'ed buffer\n");
+		hns3_ring_stats_update(ring, sw_err_cnt);
+		return -ENOMEM;
+	}
+
+	if (rlen <= HNS3_RX_HEAD_SIZE) {
+		// memcpy(skb->data, ring->va, ALIGN(rlen, sizeof(long)));
+		memcpy(__skb_put(skb, rlen), ring->va, ALIGN(rlen, sizeof(long)));
+#if 0
+		hns3_dbg(netdev, "\n");
+		hns3_dbg(netdev, "SKB->rlen(%d) <= HNS3_RX_HEAD_SIZE)\n",rlen);
+		hns3_dbg(netdev, "   ALIGN(HNS3_RX_HEAD_SIZE, sizeof(long))=%d \n",
+			ALIGN(HNS3_RX_HEAD_SIZE, sizeof(long)));
+		hns3_dbg(netdev, "   sizeof(long))=%ld \n", sizeof(long));
+#endif
+	} else {
+#if 0
+		hns3_dbg(netdev, "\n");
+		hns3_dbg(netdev, "SKB->rlen(%d) > HNS3_RX_HEAD_SIZE)\n", rlen);
+		hns3_dbg(netdev, "   ALIGN(HNS3_RX_HEAD_SIZE, sizeof(long))=%d \n",
+			ALIGN(HNS3_RX_HEAD_SIZE, sizeof(long)));
+		hns3_dbg(netdev, "   sizeof(long))=%ld \n", sizeof(long));
+#endif
+		/* sub optimized leg */
+		u32 hlen = eth_get_headlen(netdev, ring->va, HNS3_RX_HEAD_SIZE);
+		/* This is a GRO/jumbo packet spanning across many buffers or
+		 * frags. NIC hands over fully filled first buffer to the driver
+		 * in this leg. Allocated SKB must have shared SKB info at the
+		 * end of the first buffer i.e. linear part of SKB. One of the
+		 * way to accomodate above is to allocate SKB with pre-allocated
+		 * header space with SKB shared info at its end and then copy
+		 * only ethernet header part to this space from the received
+		 * first buffer. This might also be required for GRO as NIC
+		 * can update the header of the packet being coalesced.
+		 */
+		__skb_put(skb, hlen);
+		ring->pull_len = hlen;
+
+		skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
+				desc_cb->page_offset + hlen, rlen - hlen,
+				truesize);
+
+	}
+
+	trace_hns3_rx_desc(ring);
+	prefetchw(skb->data);
+
+	ring->pending_buf = 1;
+	ring->frag_num = 0;
+	ring->tail_skb = NULL;
+
+	skb_metadata_clear(skb);
+	skb_record_rx_queue(skb, ring->tqp->tqp_index);
+
+	hns3_ring_stats_update(ring, seg_pkt_cnt);
+
+	hns3_rx_ring_move_fw(ring);
+
+	if (ring->page_pool)
+		skb_mark_for_recycle(skb);
+	desc_cb->pagecnt_bias--;
+
+	return 0;
+}
 
 static int hns3_add_frag(struct hns3_enet_ring *ring)
 {
+	u32 truesize = hns3_rx_buf_truesize(ring);
 	struct sk_buff *skb = ring->skb;
 	struct sk_buff *head_skb = skb;
 	struct sk_buff *new_skb;
 	struct hns3_desc_cb *desc_cb;
 	struct hns3_desc *desc;
 	u32 bd_base_info;
+	u32 length;
 
 	do {
 		desc = &ring->desc[ring->next_to_clean];
@@ -4099,6 +4249,8 @@ static int hns3_add_frag(struct hns3_enet_ring *ring)
 		dma_rmb();
 		if (!(bd_base_info & BIT(HNS3_RXD_VLD_B)))
 			return -ENXIO;
+
+		length = le16_to_cpu(desc->rx.size);
 
 		if (unlikely(ring->frag_num >= MAX_SKB_FRAGS)) {
 			new_skb = napi_alloc_skb(&ring->tqp_vector->napi, 0);
@@ -4110,6 +4262,8 @@ static int hns3_add_frag(struct hns3_enet_ring *ring)
 
 			if (ring->page_pool)
 				skb_mark_for_recycle(new_skb);
+
+			desc_cb->pagecnt_bias--;
 
 			ring->frag_num = 0;
 
@@ -4134,7 +4288,9 @@ static int hns3_add_frag(struct hns3_enet_ring *ring)
 				hns3_buf_size(ring),
 				DMA_FROM_DEVICE);
 
-		hns3_nic_reuse_page(skb, ring->frag_num++, ring, 0, desc_cb);
+		//hns3_nic_reuse_page(skb, ring->frag_num++, ring, 0, desc_cb);
+		skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
++				desc_cb->page_offset, length, truesize);
 		trace_hns3_rx_desc(ring);
 		hns3_rx_ring_move_fw(ring);
 		ring->pending_buf++;
@@ -4361,7 +4517,8 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 		 */
 		net_prefetch(ring->va);
 
-		ret = hns3_alloc_skb(ring, length, ring->va);
+		//ret = hns3_alloc_skb(ring, length, ring->va);
+		ret = hns3_build_skb_(ring, length);
 		skb = ring->skb;
 
 		if (ret < 0) /* alloc buffer fail */
@@ -4384,13 +4541,14 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 		memcpy(skb->data, ring->va,
 		       ALIGN(ring->pull_len, sizeof(long)));
 
+	hns3_reuse_or_relinquish_page(ring, desc_cb);
+
 	ret = hns3_handle_bdinfo(ring, skb);
 	if (unlikely(ret)) {
 		dev_kfree_skb_any(skb);
 		return ret;
 	}
 
-	skb_record_rx_queue(skb, ring->tqp->tqp_index);
 	return 0;
 }
 
