@@ -167,7 +167,7 @@ hns3_build_skb(struct hns3_enet_ring *ring, struct xdp_buff *xdp)
 void hns3_xdp_complete(struct hns3_enet_ring *ring)
 {
 	if (unlikely(test_bit(HNS3_XDP_REDIRECT, ring->xdp_flags))) {
-		xdp_do_flush_map();
+		xdp_do_flush();
 		__clear_bit(HNS3_XDP_REDIRECT, ring->xdp_flags);
 	}
 
@@ -371,7 +371,7 @@ hns3_xdp_run(struct hns3_enet_ring *rx_ring, struct xdp_buff *xdp)
 		ret = HNS3_XDP_REDIRECT;
 		break;
 	default:
-		bpf_warn_invalid_xdp_action(act);
+		bpf_warn_invalid_xdp_action(rx_ring->netdev, xdp_prog, act);
 		fallthrough;
 	case XDP_ABORTED:
 		trace_xdp_exception(rx_ring->netdev, xdp_prog, act);

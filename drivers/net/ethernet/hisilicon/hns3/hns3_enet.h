@@ -5,6 +5,7 @@
 #define __HNS3_ENET_H
 
 #include <linux/if_vlan.h>
+#include <net/xdp.h>
 
 #include "hnae3.h"
 
