@@ -4104,7 +4104,7 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 	if (eop && (rlen < SKB_WITH_OVERHEAD(truesize))) {
 		skb = ring->skb = napi_build_skb(ring->va,
 						 hns3_rx_buf_truesize(ring));
-		skb_put(skb, rlen);
+		__skb_put(skb, rlen);
 		ring->copy_pkt_head = false;
 	} else {
 		/* sub optimized leg */
