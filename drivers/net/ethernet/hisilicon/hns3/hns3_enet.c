@@ -59,7 +59,7 @@ static unsigned int tx_sgl = 1;
 module_param(tx_sgl, uint, 0600);
 MODULE_PARM_DESC(tx_sgl, "Minimum number of frags when using dma_map_sg() to optimize the IOMMU mapping");
 
-static bool page_pool_enabled = true;
+static bool page_pool_enabled = false;
 module_param(page_pool_enabled, bool, 0400);
 
 #define HNS3_SGL_SIZE(nfrag)	(sizeof(struct scatterlist) * (nfrag) +	\
@@ -3717,11 +3717,71 @@ static bool hns3_nic_alloc_rx_buffers(struct hns3_enet_ring *ring,
 	return false;
 }
 
+#if 0
 static bool hns3_can_reuse_page(struct hns3_desc_cb *cb)
 {
 	return page_count(cb->priv) == cb->pagecnt_bias;
 }
+#endif
 
+static bool hns3_can_reuse_page(struct hns3_desc_cb *cb)
+{
+	struct page *page = (struct page *)cb->priv;
+	u16 pagecnt_bias = cb->pagecnt_bias;
+
+	/* distant node and pfmemalloc pages should not be reused */
+	if (!dev_page_is_reusable(page))
+		return false;
+
+	/* check if stack is using the other part of the page */
+	/*
+	 * TODO: Need to add proper page reuse handling for page size >= 8k
+	 */
+	if ((unlikely(page_count(page) - pagecnt_bias) > 1))
+		return false;
+
+	if (unlikely(pagecnt_bias == 1)) {
+		page_ref_add(page, USHRT_MAX - 1);
+		cb->pagecnt_bias = USHRT_MAX;
+	}
+
+	return true;
+}
+
+static void
+hns3_reuse_or_relinquish_page(struct hns3_enet_ring *ring,
+				  struct hns3_desc_cb *cb)
+{
+	/* driver based page-reuse is disabled with page-pool */
+	if (cb->ring->page_pool) {
+		cb->reuse_flag = 0;
+		return;
+	}
+
+	if (hns3_can_reuse_page(cb)) {
+		/* mark it for reuse in the RX buffer allocation later */
+		cb->reuse_flag = 1;
+	} else {
+		/*
+		 * we are not reusing the page so unmap it. This should be done
+		 * irrespective of the fact whether we are eventually free'ing
+		 * the page or not.
+		 */
+		dma_unmap_page_attrs(ring->dev, cb->dma, cb->length,
+				     ring_to_dma_dir(ring), DMA_ATTR_SKIP_CPU_SYNC);
+		cb->dma = 0;
+
+		/*
+		 * update the page reference with the unbiased count. This
+		 * might not result in free'ing of the page being relinquished.
+		 * Driver is just falling back to the old unbiased page release
+		 * mechanism.
+		 */
+		__page_frag_cache_drain(cb->priv, cb->pagecnt_bias);
+	}
+}
+
+#if 0
 static int hns3_handle_rx_copybreak(struct sk_buff *skb, int i,
 				    struct hns3_enet_ring *ring,
 				    int pull_len,
@@ -3749,7 +3809,9 @@ static int hns3_handle_rx_copybreak(struct sk_buff *skb, int i,
 	hns3_ring_stats_update(ring, frag_alloc);
 	return 0;
 }
+#endif
 
+#if 0
 static void hns3_nic_reuse_page(struct sk_buff *skb, int i,
 				struct hns3_enet_ring *ring, int pull_len,
 				struct hns3_desc_cb *desc_cb)
@@ -3813,6 +3875,7 @@ out:
 	if (unlikely(!desc_cb->reuse_flag))
 		__page_frag_cache_drain(desc_cb->priv, desc_cb->pagecnt_bias);
 }
+#endif
 
 static int hns3_gro_complete(struct sk_buff *skb, u32 l234info)
 {
@@ -4105,7 +4168,7 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 		skb = ring->skb = napi_build_skb(ring->va,
 						 hns3_rx_buf_truesize(ring));
 		__skb_put(skb, rlen);
-		ring->copy_pkt_head = false;
+		// ring->copy_pkt_head = false;
 	} else {
 		/* sub optimized leg */
 		u32 hlen = eth_get_headlen(netdev, ring->va, HNS3_RX_HEAD_SIZE);
@@ -4122,11 +4185,15 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 		 * can update the header of the packet being coalesced.
 		 */
 		__skb_put(skb, hlen);
-		ring->copy_pkt_head = true;
+		// ring->copy_pkt_head = true;
+		memcpy(skb->data, ring->va,
+		       ALIGN(ring->pull_len, sizeof(long)));
 		ring->pull_len = hlen;
 
 		skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
 		desc_cb->page_offset + hlen, rlen - hlen, truesize);
+
+		desc_cb->pagecnt_bias--;
 	}
 	if (unlikely(!skb)) {
 		hns3_rl_err(netdev, "failed to build skb from RX'ed buffer\n");
@@ -4156,12 +4223,14 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 
 static int hns3_add_frag(struct hns3_enet_ring *ring)
 {
+	u32 truesize = hns3_rx_buf_truesize(ring);
 	struct sk_buff *skb = ring->skb;
 	struct sk_buff *head_skb = skb;
 	struct sk_buff *new_skb;
 	struct hns3_desc_cb *desc_cb;
 	struct hns3_desc *desc;
 	u32 bd_base_info;
+	u32 length;
 
 	do {
 		desc = &ring->desc[ring->next_to_clean];
@@ -4171,6 +4240,8 @@ static int hns3_add_frag(struct hns3_enet_ring *ring)
 		dma_rmb();
 		if (!(bd_base_info & BIT(HNS3_RXD_VLD_B)))
 			return -ENXIO;
+
+		length = le16_to_cpu(desc->rx.size);
 
 		if (unlikely(ring->frag_num >= MAX_SKB_FRAGS)) {
 			new_skb = napi_alloc_skb(&ring->tqp_vector->napi, 0);
@@ -4182,6 +4253,7 @@ static int hns3_add_frag(struct hns3_enet_ring *ring)
 
 			if (ring->page_pool)
 				skb_mark_for_recycle(new_skb);
+			desc_cb->pagecnt_bias--;
 
 			ring->frag_num = 0;
 
@@ -4206,7 +4278,10 @@ static int hns3_add_frag(struct hns3_enet_ring *ring)
 				hns3_buf_size(ring),
 				DMA_FROM_DEVICE);
 
-		hns3_nic_reuse_page(skb, ring->frag_num++, ring, 0, desc_cb);
+		//hns3_nic_reuse_page(skb, ring->frag_num++, ring, 0, desc_cb);
+		skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
+				desc_cb->page_offset, length, truesize);
+
 		trace_hns3_rx_desc(ring);
 		hns3_rx_ring_move_fw(ring);
 		ring->pending_buf++;
@@ -4453,9 +4528,13 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 	/* As the head data may be changed when GRO enable, copy
 	 * the head data in after other data rx completed
 	 */
+#if 0
 	if (ring->copy_pkt_head)
 		memcpy(skb->data, ring->va,
 		       ALIGN(ring->pull_len, sizeof(long)));
+#endif
+
+	hns3_reuse_or_relinquish_page(ring, desc_cb);
 
 	ret = hns3_handle_bdinfo(ring, skb);
 	if (unlikely(ret)) {
