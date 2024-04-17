@@ -356,8 +356,18 @@ static int acpi_processor_get_info(struct acpi_device *device)
 	 *
 	 *  NOTE: Even if the processor has a cpuid, it may not be present
 	 *  because cpuid <-> apicid mapping is persistent now.
+	 *
+	 *  Note this allows 3 flows, it is up to the arch_register_cpu()
+	 *  call to reject any that are not supported on a given architecture.
+	 *  A) CPU becomes present.
+	 *  B) Previously invalid logical CPU ID (Same as becoming present)
+	 *  C) CPU already present and now being enabled (and wasn't registered
+	 *     early on an arch that doesn't defer to here)
 	 */
-	if (invalid_logical_cpuid(pr->id) || !cpu_present(pr->id)) {
+	if ((!invalid_logical_cpuid(pr->id) && cpu_present(pr->id) &&
+	     !get_cpu_device(pr->id)) ||
+	    invalid_logical_cpuid(pr->id) ||
+	    !cpu_present(pr->id)) {
 		ret = acpi_processor_hotadd_init(pr, device);
 
 		if (ret)
