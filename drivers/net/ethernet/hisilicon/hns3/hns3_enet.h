@@ -696,6 +696,17 @@ static inline u32 hns3_rx_buf_truesize(struct hns3_enet_ring *ring)
 		ring->desc_cb->length / 2;
 }
 
+static inline void hns3_adjust_page_offset(struct hns3_desc_cb *cb)
+{
+	unsigned int frame_size = hns3_rx_buf_truesize(cb->ring);
+
+	/*
+	 * TODO: Need to add proper page reuse handling for page size >= 8k
+	 */
+	/* flip to unused part of the page */
+	cb->page_offset ^= frame_size;
+}
+
 #define hns3_dbg(__dev, format, args...)\
 do {\
 	netdev_printk(KERN_ERR, __dev, "[%s][%d]" format, __func__, __LINE__ , ##args);\

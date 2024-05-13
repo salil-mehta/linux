@@ -3764,6 +3764,8 @@ hns3_reuse_or_relinquish_page(struct hns3_enet_ring *ring,
 	if (hns3_can_reuse_page(cb)) {
 		/* mark it for reuse in the RX buffer allocation later */
 		cb->reuse_flag = 1;
+		/* move to next buffer within the same page */
+		hns3_adjust_page_offset(cb);
 	} else {
 		/*
 		 * we are not reusing the page so unmap it. This should be done
@@ -4171,7 +4173,7 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 		skb = ring->skb = napi_build_skb(ring->va,
 						 hns3_rx_buf_truesize(ring));
 		__skb_put(skb, rlen);
-		// ring->copy_pkt_head = false;
+		ring->copy_pkt_head = false;
 	} else {
 		/* sub optimized leg */
 		u32 hlen = eth_get_headlen(netdev, ring->va, HNS3_RX_HEAD_SIZE);
@@ -4188,15 +4190,13 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 		 * can update the header of the packet being coalesced.
 		 */
 		__skb_put(skb, hlen);
-		// ring->copy_pkt_head = true;
-		memcpy(skb->data, ring->va,
-		       ALIGN(ring->pull_len, sizeof(long)));
+		ring->copy_pkt_head = true;
 		ring->pull_len = hlen;
+		//memcpy(skb->data, ring->va,
+		//       ALIGN(ring->pull_len, sizeof(long)));
 
 		skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
 		desc_cb->page_offset + hlen, rlen - hlen, truesize);
-
-		desc_cb->pagecnt_bias--;
 	}
 	if (unlikely(!skb)) {
 		hns3_rl_err(netdev, "failed to build skb from RX'ed buffer\n");
@@ -4220,6 +4220,7 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 
 	if (ring->page_pool)
 		skb_mark_for_recycle(skb);
+	desc_cb->pagecnt_bias--;
 
 	return 0;
 }
@@ -4531,11 +4532,11 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 	/* As the head data may be changed when GRO enable, copy
 	 * the head data in after other data rx completed
 	 */
-#if 0
+//#if 0
 	if (ring->copy_pkt_head)
 		memcpy(skb->data, ring->va,
 		       ALIGN(ring->pull_len, sizeof(long)));
-#endif
+//#endif
 
 	hns3_reuse_or_relinquish_page(ring, desc_cb);
 
