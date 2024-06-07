@@ -3762,12 +3762,6 @@ static void hns3_nic_reuse_page(struct sk_buff *skb, int i,
 	int ret = 0;
 	bool reused;
 
-	if (ring->page_pool) {
-		skb_add_rx_frag(skb, i, desc_cb->priv, frag_offset,
-				frag_size, truesize);
-		return;
-	}
-
 	/* Avoid re-using remote or pfmem page */
 	if (unlikely(!dev_page_is_reusable(desc_cb->priv)))
 		goto out;
@@ -4098,35 +4092,42 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 
 	eop = !!(le32_to_cpu(desc->rx.bd_base_info) & BIT(HNS3_RXD_FE_B));
 
-	/* avoid header copying overhead if the enitre packet is present within
-	 * the single RX buffer
+	/* Avoid header copying overhead if the enitre packet (+shared SKB Info)
+	 * can be accomodated in the single received buffer
 	 */
 	if (eop && (rlen < SKB_WITH_OVERHEAD(truesize))) {
 		skb = ring->skb = napi_build_skb(ring->va,
 						 hns3_rx_buf_truesize(ring));
+		if (unlikely(!skb))
+			goto fail_alloc_skb;
+
 		__skb_put(skb, rlen);
 		ring->copy_pkt_head = false;
 	} else {
 		/* sub optimized leg */
 		u32 hlen = eth_get_headlen(netdev, ring->va, HNS3_RX_HEAD_SIZE);
 		skb = ring->skb = napi_alloc_skb(&ring->tqp_vector->napi, hlen);
+		if (unlikely(!skb))
+			goto fail_alloc_skb;
 
 		/* This is a GRO/jumbo packet spanning across many buffers or
-		 * frags. NIC hands over fully filled first buffer to the driver
-		 * in this leg. Allocated SKB must have shared SKB info at the
-		 * end of the first buffer i.e. linear part of SKB. One of the
-		 * way to accomodate above is to allocate SKB with pre-allocated
-		 * header space with SKB shared info at its end and then copy
-		 * only ethernet header part to this space from the received
-		 * first buffer. This might also be required for GRO as NIC
-		 * can update the header of the packet being coalesced.
+		 * frags. We only copy the ethernet header to linear space and
+		 * make rest as fragments. We defer the copy of the header till
+		 * all frags have been received as hardware may change header.
 		 */
 		__skb_put(skb, hlen);
 		ring->copy_pkt_head = true;
 		ring->pull_len = hlen;
 
-		skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
-		desc_cb->page_offset + hlen, rlen - hlen, truesize);
+		if (ring->page_pool) {
+			skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
+					desc_cb->page_offset + hlen,
+					rlen - hlen, truesize);
+		} else {
+			/* old page-reuse logic retained: will be refactored */
+			hns3_nic_reuse_page(skb, ring->frag_num++, ring, hlen,
+						desc_cb);
+		}
 	}
 	if (unlikely(!skb)) {
 		hns3_rl_err(netdev, "failed to build skb from RX'ed buffer\n");
@@ -4152,6 +4153,12 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 		skb_mark_for_recycle(skb);
 
 	return 0;
+
+fail_alloc_skb:
+	hns3_rl_err(netdev, "failed to build skb from RX'ed buffer\n");
+	hns3_ring_stats_update(ring, sw_err_cnt);
+
+	return -ENOMEM;
 }
 
 static int hns3_add_frag(struct hns3_enet_ring *ring)
@@ -4206,7 +4213,15 @@ static int hns3_add_frag(struct hns3_enet_ring *ring)
 				hns3_buf_size(ring),
 				DMA_FROM_DEVICE);
 
-		hns3_nic_reuse_page(skb, ring->frag_num++, ring, 0, desc_cb);
+		if (ring->page_pool) {
+			skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
+					desc_cb->page_offset, 0,
+					hns3_buf_size(ring));
+		} else {
+			/* old page-reuse logic retained: will be refactored */
+			hns3_nic_reuse_page(skb, ring->frag_num++, ring, 0,
+						desc_cb);
+		}
 		trace_hns3_rx_desc(ring);
 		hns3_rx_ring_move_fw(ring);
 		ring->pending_buf++;
