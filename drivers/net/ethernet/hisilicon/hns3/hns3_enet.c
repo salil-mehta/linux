@@ -3762,12 +3762,6 @@ static void hns3_nic_reuse_page(struct sk_buff *skb, int i,
 	int ret = 0;
 	bool reused;
 
-	if (ring->page_pool) {
-		skb_add_rx_frag(skb, i, desc_cb->priv, frag_offset,
-				frag_size, truesize);
-		return;
-	}
-
 	/* Avoid re-using remote or pfmem page */
 	if (unlikely(!dev_page_is_reusable(desc_cb->priv)))
 		goto out;
@@ -4031,63 +4025,8 @@ static void hns3_rx_ring_move_fw(struct hns3_enet_ring *ring)
 		ring->next_to_clean = 0;
 }
 
-#if 0
-static int hns3_alloc_skb(struct hns3_enet_ring *ring, unsigned int length,
-			  unsigned char *va)
-{
-	struct hns3_desc_cb *desc_cb = &ring->desc_cb[ring->next_to_clean];
-	struct net_device *netdev = ring_to_netdev(ring);
-	struct sk_buff *skb;
-
-	ring->skb = napi_alloc_skb(&ring->tqp_vector->napi, HNS3_RX_HEAD_SIZE);
-	skb = ring->skb;
-	if (unlikely(!skb)) {
-		hns3_rl_err(netdev, "alloc rx skb fail\n");
-		hns3_ring_stats_update(ring, sw_err_cnt);
-
-		return -ENOMEM;
-	}
-
-	trace_hns3_rx_desc(ring);
-	prefetchw(skb->data);
-
-	ring->pending_buf = 1;
-	ring->frag_num = 0;
-	ring->tail_skb = NULL;
-	if (length <= HNS3_RX_HEAD_SIZE) {
-		memcpy(__skb_put(skb, length), va, ALIGN(length, sizeof(long)));
-
-		/* We can reuse buffer as-is, just make sure it is reusable */
-		if (dev_page_is_reusable(desc_cb->priv))
-			desc_cb->reuse_flag = 1;
-		else if (desc_cb->type & DESC_TYPE_PP_FRAG)
-			page_pool_put_full_page(ring->page_pool, desc_cb->priv,
-						false);
-		else /* This page cannot be reused so discard it */
-			__page_frag_cache_drain(desc_cb->priv,
-						desc_cb->pagecnt_bias);
-
-		hns3_rx_ring_move_fw(ring);
-		return 0;
-	}
-
-	if (ring->page_pool)
-		skb_mark_for_recycle(skb);
-
-	hns3_ring_stats_update(ring, seg_pkt_cnt);
-
-	ring->pull_len = eth_get_headlen(netdev, va, HNS3_RX_HEAD_SIZE);
-	__skb_put(skb, ring->pull_len);
-	hns3_nic_reuse_page(skb, ring->frag_num++, ring, ring->pull_len,
-			    desc_cb);
-	hns3_rx_ring_move_fw(ring);
-
-	return 0;
-}
-#endif
-
 static int
-hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
+hns3_build_skb(struct hns3_enet_ring *ring, unsigned int rlen)
 {
 	struct hns3_desc_cb *desc_cb = &ring->desc_cb[ring->next_to_clean];
 	struct hns3_desc *desc = &ring->desc[ring->next_to_clean];
@@ -4097,6 +4036,9 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 	bool eop;
 
 	eop = !!(le32_to_cpu(desc->rx.bd_base_info) & BIT(HNS3_RXD_FE_B));
+	ring->pending_buf = 1;
+	ring->tail_skb = NULL;
+	ring->frag_num = 0;
 
 	/* Avoid header copying overhead if the enitre packet (+shared SKB Info)
 	 * can be accomodated in the single received buffer
@@ -4135,18 +4077,9 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 						desc_cb);
 		}
 	}
-	if (unlikely(!skb)) {
-		hns3_rl_err(netdev, "failed to build skb from RX'ed buffer\n");
-		hns3_ring_stats_update(ring, sw_err_cnt);
-		return -ENOMEM;
-	}
 
 	trace_hns3_rx_desc(ring);
 	prefetchw(skb->data);
-
-	ring->pending_buf = 1;
-	ring->frag_num = 0;
-	ring->tail_skb = NULL;
 
 	skb_metadata_clear(skb);
 	skb_record_rx_queue(skb, ring->tqp->tqp_index);
@@ -4218,20 +4151,18 @@ static int hns3_add_frag(struct hns3_enet_ring *ring)
 				desc_cb->dma + desc_cb->page_offset,
 				hns3_buf_size(ring),
 				DMA_FROM_DEVICE);
-#if 0
+
 		if (ring->page_pool) {
 			skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
 					desc_cb->page_offset, 
 					le16_to_cpu(desc->rx.size),
 					hns3_rx_buf_truesize(ring));
 		} else {
-#endif
 			/* old page-reuse logic retained: will be refactored */
 			hns3_nic_reuse_page(skb, ring->frag_num++, ring, 0,
 						desc_cb);
-#if 0
 		}
-#endif
+
 		trace_hns3_rx_desc(ring);
 		hns3_rx_ring_move_fw(ring);
 		ring->pending_buf++;
@@ -4458,8 +4389,7 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 		 */
 		net_prefetch(ring->va);
 
-		//ret = hns3_alloc_skb(ring, length, ring->va);
-		ret = hns3_build_skb_(ring, length);
+		ret = hns3_build_skb(ring, length);
 		skb = ring->skb;
 
 		if (ret < 0) /* alloc buffer fail */
@@ -4478,9 +4408,10 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 	/* As the head data may be changed when GRO enable, copy
 	 * the head data in after other data rx completed
 	 */
-	if (ring->copy_pkt_head)
+	if (ring->copy_pkt_head) {
 		memcpy(skb->data, ring->va,
 		       ALIGN(ring->pull_len, sizeof(long)));
+	}
 
 	ret = hns3_handle_bdinfo(ring, skb);
 	if (unlikely(ret)) {
