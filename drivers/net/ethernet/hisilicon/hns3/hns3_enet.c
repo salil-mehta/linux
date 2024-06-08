@@ -4408,10 +4408,9 @@ static int hns3_handle_rx_bd(struct hns3_enet_ring *ring)
 	/* As the head data may be changed when GRO enable, copy
 	 * the head data in after other data rx completed
 	 */
-	if (ring->copy_pkt_head) {
+	if (ring->copy_pkt_head)
 		memcpy(skb->data, ring->va,
 		       ALIGN(ring->pull_len, sizeof(long)));
-	}
 
 	ret = hns3_handle_bdinfo(ring, skb);
 	if (unlikely(ret)) {
