@@ -3762,6 +3762,12 @@ static void hns3_nic_reuse_page(struct sk_buff *skb, int i,
 	int ret = 0;
 	bool reused;
 
+	if (ring->page_pool) {
+		skb_add_rx_frag(skb, i, desc_cb->priv, frag_offset,
+				frag_size, truesize);
+		return;
+	}
+
 	/* Avoid re-using remote or pfmem page */
 	if (unlikely(!dev_page_is_reusable(desc_cb->priv)))
 		goto out;
@@ -4095,7 +4101,7 @@ hns3_build_skb_(struct hns3_enet_ring *ring, unsigned int rlen)
 	/* Avoid header copying overhead if the enitre packet (+shared SKB Info)
 	 * can be accomodated in the single received buffer
 	 */
-	if (eop && (rlen < SKB_WITH_OVERHEAD(truesize))) {
+	if (eop && (rlen <= SKB_WITH_OVERHEAD(truesize))) {
 		skb = ring->skb = napi_build_skb(ring->va,
 						 hns3_rx_buf_truesize(ring));
 		if (unlikely(!skb))
@@ -4212,16 +4218,20 @@ static int hns3_add_frag(struct hns3_enet_ring *ring)
 				desc_cb->dma + desc_cb->page_offset,
 				hns3_buf_size(ring),
 				DMA_FROM_DEVICE);
-
+#if 0
 		if (ring->page_pool) {
 			skb_add_rx_frag(skb, ring->frag_num++, desc_cb->priv,
-					desc_cb->page_offset, 0,
-					hns3_buf_size(ring));
+					desc_cb->page_offset, 
+					le16_to_cpu(desc->rx.size),
+					hns3_rx_buf_truesize(ring));
 		} else {
+#endif
 			/* old page-reuse logic retained: will be refactored */
 			hns3_nic_reuse_page(skb, ring->frag_num++, ring, 0,
 						desc_cb);
+#if 0
 		}
+#endif
 		trace_hns3_rx_desc(ring);
 		hns3_rx_ring_move_fw(ring);
 		ring->pending_buf++;
