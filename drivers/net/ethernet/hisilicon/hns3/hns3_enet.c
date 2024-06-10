@@ -4971,6 +4971,7 @@ static void hns3_alloc_page_pool(struct hns3_enet_ring *ring)
 		.pool_size = ring->desc_num * hns3_buf_size(ring) /
 				(PAGE_SIZE << hns3_page_order(ring)),
 		.nid = dev_to_node(ring_to_dev(ring)),
+		.napi = &ring->tqp_vector->napi,
 		.dev = ring_to_dev(ring),
 		.dma_dir = DMA_FROM_DEVICE,
 		.offset = 0,
@@ -5049,6 +5050,7 @@ void hns3_fini_ring(struct hns3_enet_ring *ring)
 	}
 
 	if (!HNAE3_IS_TX_RING(ring) && ring->page_pool) {
+		page_pool_unlink_napi(ring->page_pool);
 		page_pool_destroy(ring->page_pool);
 		ring->page_pool = NULL;
 	}
