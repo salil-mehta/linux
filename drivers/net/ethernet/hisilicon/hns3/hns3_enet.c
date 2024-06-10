@@ -3556,15 +3556,14 @@ out_buffer_fail:
 
 /* detach a in-used buffer and replace with a reserved one */
 static void hns3_replace_buffer(struct hns3_enet_ring *ring, int i,
-				struct hns3_desc_cb *res_cb)
+				struct hns3_desc_cb *desc_cb)
 {
 	if (ring->page_pool) {
-		hns3_unmap_buffer(ring, &ring->desc_cb[i]);
+		hns3_unmap_buffer(ring, desc_cb);
 	}
-	ring->desc_cb[i] = *res_cb;
-	ring->desc_cb[i].refill = 1;
-	ring->desc[i].addr = cpu_to_le64(ring->desc_cb[i].dma +
-					 ring->desc_cb[i].page_offset);
+
+	desc_cb->refill = 1;
+	ring->desc[i].addr = cpu_to_le64(desc_cb->dma + desc_cb->page_offset);
 	ring->desc[i].rx.bd_base_info = 0;
 }
 
@@ -3688,7 +3687,6 @@ static bool hns3_nic_alloc_rx_buffers(struct hns3_enet_ring *ring,
 				      int cleand_count)
 {
 	struct hns3_desc_cb *desc_cb;
-	struct hns3_desc_cb res_cbs;
 	int i, ret;
 
 	for (i = 0; i < cleand_count; i++) {
@@ -3698,7 +3696,7 @@ static bool hns3_nic_alloc_rx_buffers(struct hns3_enet_ring *ring,
 
 			hns3_reuse_buffer(ring, ring->next_to_use);
 		} else {
-			ret = hns3_alloc_and_map_buffer(ring, &res_cbs);
+			ret = hns3_alloc_and_map_buffer(ring, desc_cb);
 			if (ret) {
 				hns3_ring_stats_update(ring, sw_err_cnt);
 
@@ -3710,7 +3708,7 @@ static bool hns3_nic_alloc_rx_buffers(struct hns3_enet_ring *ring,
 				       HNS3_RING_RX_RING_HEAD_REG);
 				return true;
 			}
-			hns3_replace_buffer(ring, ring->next_to_use, &res_cbs);
+			hns3_replace_buffer(ring, ring->next_to_use, desc_cb);
 
 			hns3_ring_stats_update(ring, non_reuse_pg);
 		}
@@ -5525,16 +5523,17 @@ static void hns3_clear_tx_ring(struct hns3_enet_ring *ring)
 
 static int hns3_clear_rx_ring(struct hns3_enet_ring *ring)
 {
-	struct hns3_desc_cb res_cbs;
+	struct hns3_desc_cb *desc_cb;
 	int ret;
 
 	while (ring->next_to_use != ring->next_to_clean) {
+		desc_cb = &ring->desc_cb[ring->next_to_use];
 		/* When a buffer is not reused, it's memory has been
 		 * freed in hns3_handle_rx_bd or will be freed by
 		 * stack, so we need to replace the buffer here.
 		 */
-		if (!ring->desc_cb[ring->next_to_use].reuse_flag) {
-			ret = hns3_alloc_and_map_buffer(ring, &res_cbs);
+		if (!desc_cb->reuse_flag) {
+			ret = hns3_alloc_and_map_buffer(ring, desc_cb);
 			if (ret) {
 				hns3_ring_stats_update(ring, sw_err_cnt);
 				/* if alloc new buffer fail, exit directly
@@ -5545,7 +5544,7 @@ static int hns3_clear_rx_ring(struct hns3_enet_ring *ring)
 					    ret);
 				return ret;
 			}
-			hns3_replace_buffer(ring, ring->next_to_use, &res_cbs);
+			hns3_replace_buffer(ring, ring->next_to_use, desc_cb);
 		}
 		ring_ptr_move_fw(ring, next_to_use);
 	}
