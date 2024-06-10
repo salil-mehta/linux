@@ -3506,9 +3506,12 @@ static int hns3_alloc_and_map_buffer(struct hns3_enet_ring *ring,
 	if (ret || ring->page_pool)
 		goto out;
 
-	ret = hns3_map_buffer(ring, cb);
-	if (ret)
-		goto out_with_buf;
+	/* page-pool already gives mapped buffer pages */
+	if (!ring->page_pool) {
+		ret = hns3_map_buffer(ring, cb);
+		if (ret)
+			goto out_with_buf;
+	}
 
 	return 0;
 
@@ -3555,7 +3558,9 @@ out_buffer_fail:
 static void hns3_replace_buffer(struct hns3_enet_ring *ring, int i,
 				struct hns3_desc_cb *res_cb)
 {
-	hns3_unmap_buffer(ring, &ring->desc_cb[i]);
+	if (!ring->page_pool) {
+		hns3_unmap_buffer(ring, &ring->desc_cb[i]);
+	}
 	ring->desc_cb[i] = *res_cb;
 	ring->desc_cb[i].refill = 1;
 	ring->desc[i].addr = cpu_to_le64(ring->desc_cb[i].dma +
