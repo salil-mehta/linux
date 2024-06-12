@@ -1284,32 +1284,43 @@ static int kvm_vcpu_init_check_features(struct kvm_vcpu *vcpu,
 			return -ENOENT;
 	}
 
-	if (features & ~system_supported_vcpu_features())
+	if (features & ~system_supported_vcpu_features()) {
+		printk("features %lu, ~system_supported_vcpu_features() %lu \n",
+			features, system_supported_vcpu_features());
 		return -EINVAL;
+	}
 
 	/*
 	 * For now make sure that both address/generic pointer authentication
 	 * features are requested by the userspace together.
 	 */
 	if (test_bit(KVM_ARM_VCPU_PTRAUTH_ADDRESS, &features) !=
-	    test_bit(KVM_ARM_VCPU_PTRAUTH_GENERIC, &features))
+	    test_bit(KVM_ARM_VCPU_PTRAUTH_GENERIC, &features)) {
+		printk("KVM_ARM_VCPU_PTRAUTH_ADDRESS \n");
 		return -EINVAL;
+	}
 
 	/* Disallow NV+SVE for the time being */
 	if (test_bit(KVM_ARM_VCPU_HAS_EL2, &features) &&
-	    test_bit(KVM_ARM_VCPU_SVE, &features))
+	    test_bit(KVM_ARM_VCPU_SVE, &features)) {
+		printk("KVM_ARM_VCPU_SVE \n");   
 		return -EINVAL;
+	}
 
 	if (!test_bit(KVM_ARM_VCPU_EL1_32BIT, &features))
 		return 0;
 
 	/* MTE is incompatible with AArch32 */
-	if (kvm_has_mte(vcpu->kvm))
+	if (kvm_has_mte(vcpu->kvm)) {
+		printk("kvm_has_mte \n");  
 		return -EINVAL;
+	}
 
 	/* NV is incompatible with AArch32 */
-	if (test_bit(KVM_ARM_VCPU_HAS_EL2, &features))
+	if (test_bit(KVM_ARM_VCPU_HAS_EL2, &features)) {
+		printk("KVM_ARM_VCPU_HAS_EL2 \n");  
 		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -1374,8 +1385,10 @@ static int kvm_vcpu_set_target(struct kvm_vcpu *vcpu,
 	int ret;
 
 	if (init->target != KVM_ARM_TARGET_GENERIC_V8 &&
-	    init->target != kvm_target_cpu())
+	    init->target != kvm_target_cpu()) {
+		printk("init->target %u, kvm_target_cpu() %u \n", init->target, kvm_target_cpu());
 		return -EINVAL;
+	}
 
 	ret = kvm_vcpu_init_check_features(vcpu, init);
 	if (ret)
@@ -1384,8 +1397,10 @@ static int kvm_vcpu_set_target(struct kvm_vcpu *vcpu,
 	if (!kvm_vcpu_initialized(vcpu))
 		return __kvm_vcpu_set_target(vcpu, init);
 
-	if (kvm_vcpu_init_changed(vcpu, init))
+	if (kvm_vcpu_init_changed(vcpu, init)) {
+		printk("kvm_vcpu_init_changed()\n");
 		return -EINVAL;
+	}
 
 	kvm_reset_vcpu(vcpu);
 	return 0;
