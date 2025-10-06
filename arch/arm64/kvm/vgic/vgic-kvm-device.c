@@ -523,6 +523,31 @@ static bool reg_allowed_pre_init(struct kvm_device_attr *attr)
 }
 
 /*
+ * Fast, lockless read of ICC_CTLR_EL1 for userspace ioctl.
+ * Returns:
+ *   0       (handled (value written))
+ *  -EFAULT  (userspace write failed)
+ */
+static inline int
+vgic_v3_try_icc_ctlr_el1_lockless_access(struct kvm_device *dev,
+                                         const struct kvm_device_attr *attr,
+                                         struct kvm_vcpu *vcpu)
+{
+	struct vgic_v3_cpu_if *vgic_cpu_if = &vcpu->arch.vgic_cpu.vgic_v3;
+	u32 __user *uaddr;
+	u64 shadow;
+
+	/* pathological check, in case we here too early */
+	if (!vgic_initialized(dev->kvm))
+		return -EBUSY;
+
+	shadow = smp_load_acquire(&vgic_cpu_if->icc_ctlr_el1_shadow);
+	uaddr = (u32 __user *)(unsigned long)attr->addr;
+
+	return put_user((u32)shadow, uaddr) ? -EFAULT : 0;
+}
+
+/*
  * vgic_v3_attr_regs_access - allows user space to access VGIC v3 state
  *
  * @dev:      kvm device handle
@@ -533,6 +558,7 @@ static int vgic_v3_attr_regs_access(struct kvm_device *dev,
 				    struct kvm_device_attr *attr,
 				    bool is_write)
 {
+	u32 sysreg = attr->attr & ~KVM_DEV_ARM_VGIC_CPUID_MASK;
 	struct vgic_reg_attr reg_attr;
 	gpa_t addr;
 	struct kvm_vcpu *vcpu;
@@ -549,6 +575,13 @@ static int vgic_v3_attr_regs_access(struct kvm_device *dev,
 
 	switch (attr->group) {
 	case KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS:
+		/* Try lockless ICC_CTLR_EL1 read first (only for reads). */
+		if (!is_write && sysreg == SYS_ICC_CTLR_EL1) {
+			ret = vgic_v3_try_icc_ctlr_el1_lockless_access(dev,
+				attr, vcpu);
+			return ret;
+		}
+
 		/* Sysregs uaccess is performed by the sysreg handling code */
 		uaccess = false;
 		break;
